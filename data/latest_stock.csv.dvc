@@ -1,0 +1,5 @@
+outs:
+- md5: 13131428d81f151e7542355ee08f3dc5
+  size: 59615
+  hash: md5
+  path: latest_stock.csv

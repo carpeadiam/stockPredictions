@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # 1. THE BACKEND API (FastAPI + DVC + MLflow Logging)
+  app:
+    build: .
+    container_name: mlops-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app  # Maps the current folder so SQLite/DVC/Git stay persistent
+    environment:
+      - MLFLOW_TRACKING_URI=sqlite:///mlflow.db
+    depends_on:
+      - prometheus
+
+  # 2. MLFLOW UI (The dashboard to see experiments and models)
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow-ui
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: mlflow ui --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db
+
+  # 3. PROMETHEUS (Scrapes metrics from /metrics)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  # 4. GRAFANA (Visualization dashboard)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus

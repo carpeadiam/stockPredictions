@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+yfinance
+pandas
+numpy
+scikit-learn
+xgboost
+mlflow
+dvc
+shap
+evidently
+fairlearn
+prometheus-client
+matplotlib
+lime
