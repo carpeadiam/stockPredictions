@@ -13,3 +13,4 @@ fairlearn
 prometheus-client
 matplotlib
 lime
+gcloud
