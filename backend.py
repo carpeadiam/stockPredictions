@@ -37,7 +37,7 @@ REQUEST_COUNT = Counter("ml_requests_total", "Total hits", ["endpoint"], registr
 LATENCY = Histogram("ml_prediction_latency_seconds", "Latency", registry=REGISTRY)
 MODEL_MSE = Gauge("ml_model_mse", "Model Error", ["model_name"], registry=REGISTRY)
 
-# FORCE INITIALIZATION: So Prometheus shows data immediately
+# Initialize metrics to avoid "no data" in Prometheus
 for ep in ["/train", "/predict"]: REQUEST_COUNT.labels(endpoint=ep).inc(0)
 for m in ["XGBoost", "RandomForest", "LinearReg"]: MODEL_MSE.labels(model_name=m).set(0)
 
@@ -45,7 +45,6 @@ app = FastAPI(title="Production ML Pipeline")
 
 @app.get("/metrics")
 def metrics():
-    # FIX: Direct text output to prevent 404/Redirect bugs
     return PlainTextResponse(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 MODELS = {
@@ -55,13 +54,11 @@ MODELS = {
 }
 
 def sanitize_columns(df):
-    """Flattens multi-index columns and removes ticker suffixes."""
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.columns = [str(c).split()[0].replace("'", "").replace("(", "").replace(",", "") for c in df.columns]
     return df
 
-# --- 1. TRAINING ---
 @app.post("/train")
 async def train():
     REQUEST_COUNT.labels(endpoint="/train").inc()
@@ -83,18 +80,15 @@ async def train():
 
     return {"status": "Trained", "models": list(MODELS.keys())}
 
-# --- 2. REPORTS (ALL MODELS) ---
 @app.post("/generate-reports")
 async def generate_reports():
     df = pd.read_csv("data/latest_stock.csv").apply(pd.to_numeric, errors='coerce').dropna()
     X = df[['Open', 'High', 'Low', 'Volume']].astype(float)
     
-    # Evidently Drift Report
     report = Report(metrics=[DataDriftPreset()])
     report.run(reference_data=X.head(50), current_data=X.tail(50))
     report.save_html("reports/drift_report.html")
 
-    # SHAP for ALL models
     for name, model in MODELS.items():
         with mlflow.start_run(run_name=f"SHAP_{name}"):
             def p_wrap(data):
@@ -103,25 +97,29 @@ async def generate_reports():
 
     return {"status": "Reports Generated"}
 
-# --- 3. PREDICT (FIXED) ---
+# --- 3. THE FIXED PREDICT ---
 @app.post("/predict")
 async def predict(payload: dict):
     start_time = time.time()
     REQUEST_COUNT.labels(endpoint="/predict").inc()
     model_name = payload.get("model_name", "XGBoost")
-    features = payload.get("features") 
+    feats = payload.get("features") # Expected keys: open, high, low, volume (case insensitive)
 
     try:
         model = mlflow.sklearn.load_model(f"models:/Stock_{model_name}/latest")
         
-        # FIX: Ensure it creates a DataFrame with the right orientation and names
-        input_df = pd.DataFrame([features]) 
-        input_df.columns = [str(c).capitalize() for c in input_df.columns]
-        input_df = input_df[['Open', 'High', 'Low', 'Volume']].astype(float)
+        # FIXED: Explicit dictionary re-mapping to ensure order and naming
+        clean_feats = {
+            'Open': float(feats.get('open') or feats.get('Open')),
+            'High': float(feats.get('high') or feats.get('High')),
+            'Low': float(feats.get('low') or feats.get('Low')),
+            'Volume': float(feats.get('volume') or feats.get('Volume'))
+        }
         
+        input_df = pd.DataFrame([clean_feats])
         prediction = model.predict(input_df)
 
-        # LIME Local Explainability
+        # LIME Explanation
         df_train = pd.read_csv("data/latest_stock.csv").head(100)
         explainer = lime.lime_tabular.LimeTabularExplainer(
             df_train[['Open', 'High', 'Low', 'Volume']].values,
@@ -137,7 +135,7 @@ async def predict(payload: dict):
             "lime": exp.as_list()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Predict Failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
