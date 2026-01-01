@@ -1,142 +1,243 @@
 import os
 import time
-import subprocess
+import json
+import numpy as np
 import pandas as pd
 import yfinance as yf
 import mlflow
 import mlflow.sklearn
-import mlflow.shap
-import shap
-import lime
-import lime.lime_tabular
-import numpy as np
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
-from prometheus_client import Counter, Gauge, Histogram, generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
+import mlflow.pyfunc
+from pandas import Timedelta
+
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
+from prometheus_client import (
+    Counter, Gauge, Histogram,
+    generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
+)
+
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from xgboost import XGBRegressor
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression 
+from sklearn.linear_model import LinearRegression
+from xgboost import XGBRegressor
 
-# --- EVIDENTLY (STRICT LEGACY) & FAIRLEARN ---
-from evidently.legacy.report import Report
-from evidently.legacy.metric_preset import DataDriftPreset
-from fairlearn.metrics import MetricFrame
-
-# --- CONFIGURATION ---
-DB_PATH = "sqlite:///mlflow.db"
-mlflow.set_tracking_uri(DB_PATH)
+# ================= MLflow =================
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
 mlflow.set_experiment("Stock_Price_Final_Production_V5")
-os.makedirs("reports", exist_ok=True)
+
 os.makedirs("data", exist_ok=True)
 
-# --- PROMETHEUS SETUP ---
+# ================= Prometheus =================
 REGISTRY = CollectorRegistry()
-REQUEST_COUNT = Counter("ml_requests_total", "Total hits", ["endpoint"], registry=REGISTRY)
-LATENCY = Histogram("ml_prediction_latency_seconds", "Latency", registry=REGISTRY)
-MODEL_MSE = Gauge("ml_model_mse", "Model Error", ["model_name"], registry=REGISTRY)
+REQUEST_COUNT = Counter(
+    "ml_requests_total", "Total hits", ["endpoint"], registry=REGISTRY
+)
+LATENCY = Histogram(
+    "ml_prediction_latency_seconds", "Latency", registry=REGISTRY
+)
+MODEL_MSE = Gauge(
+    "ml_model_mse", "Model Error", ["model_name"], registry=REGISTRY
+)
 
-# Initialize metrics to avoid "no data" in Prometheus
-for ep in ["/train", "/predict"]: REQUEST_COUNT.labels(endpoint=ep).inc(0)
-for m in ["XGBoost", "RandomForest", "LinearReg"]: MODEL_MSE.labels(model_name=m).set(0)
-
+# ================= App =================
 app = FastAPI(title="Production ML Pipeline")
 
 @app.get("/metrics")
 def metrics():
-    return PlainTextResponse(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+    return PlainTextResponse(
+        generate_latest(REGISTRY),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
-MODELS = {
-    "XGBoost": XGBRegressor(),
-    "RandomForest": RandomForestRegressor(),
-    "LinearReg": LinearRegression()
+# ================= Feature Engineering =================
+def add_features(df):
+    df = df.copy()
+
+    df["Log_Return"] = np.log(df["Close"] / df["Close"].shift(1))
+
+    df["MA_5"] = df["Close"].rolling(5).mean()
+    df["MA_10"] = df["Close"].rolling(10).mean()
+    df["MA_20"] = df["Close"].rolling(20).mean()
+    df["Volatility"] = df["Close"].rolling(10).std()
+
+    df["Return_1"] = df["Log_Return"].shift(1)
+    df["Return_3"] = df["Log_Return"].shift(3)
+    df["Return_5"] = df["Log_Return"].shift(5)
+
+    df["Momentum_5"] = df["Close"] - df["Close"].shift(5)
+
+    df["Close_lag1"] = df["Close"].shift(1)
+    df["Close_lag2"] = df["Close"].shift(2)
+
+    return df.dropna()
+
+FEATURES = [
+    "Open", "High", "Low", "Volume",
+    "MA_5", "MA_10", "MA_20",
+    "Volatility", "Close_lag1", "Close_lag2",
+    "Return_1", "Return_3", "Return_5",
+    "Momentum_5"
+]
+
+# ================= Base Models =================
+BASE_MODELS = {
+    "XGBoost": XGBRegressor(
+        n_estimators=200, max_depth=6, learning_rate=0.1
+    ),
+    "RandomForest": RandomForestRegressor(
+        n_estimators=200, max_depth=10
+    ),
+    "LinearReg": Pipeline([
+        ("scaler", StandardScaler()),
+        ("lr", LinearRegression())
+    ]),
 }
 
-def sanitize_columns(df):
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df.columns = [str(c).split()[0].replace("'", "").replace("(", "").replace(",", "") for c in df.columns]
-    return df
+# ================= Ensemble PyFunc =================
+class EnsembleModel(mlflow.pyfunc.PythonModel):
+    def load_context(self, context):
+        with open(context.artifacts["weights"], "r") as f:
+            self.weights = json.load(f)
 
+        self.models = {
+            name: mlflow.sklearn.load_model(
+                f"models:/Stock_{name}/latest"
+            )
+            for name in self.weights
+        }
+
+    def predict(self, context, model_input):
+        preds = np.zeros(len(model_input))
+        for name, model in self.models.items():
+            preds += self.weights[name] * model.predict(model_input)
+        return preds
+
+# ================= TRAIN =================
 @app.post("/train")
 async def train():
     REQUEST_COUNT.labels(endpoint="/train").inc()
-    raw_df = yf.download("RELIANCE.NS", start="2023-01-01").dropna()
-    df = sanitize_columns(raw_df)[['Open', 'High', 'Low', 'Volume', 'Close']].copy()
+
+    raw = yf.download(
+        "RELIANCE.NS",
+        start="2023-01-01",
+        auto_adjust=False,
+        group_by="column"
+    )
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+
+    raw = raw.reset_index()
+
+    df = raw[["Date", "Open", "High", "Low", "Close", "Volume"]]
+    df = add_features(df)
     df.to_csv("data/latest_stock.csv", index=False)
-    
-    X = df[['Open', 'High', 'Low', 'Volume']].astype(float)
-    y = df['Close'].shift(-1).ffill().astype(float).values.ravel() 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-    for name, model in MODELS.items():
-        with mlflow.start_run(run_name=f"{name}_Run"):
+    if len(df) == 0:
+        return {"status": "error", "message": "Insufficient data"}
+
+    with open("data/last_close.json", "w") as f:
+        json.dump({"last_close": float(df["Close"].iloc[-1])}, f)
+
+    X = df[FEATURES]
+    df["Log_Return_Next"] = np.log(df["Close"].shift(-1) / df["Close"])
+    y = df["Log_Return_Next"].dropna().values.ravel()
+    X = X.iloc[:-1]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, shuffle=False
+    )
+
+    rmse_scores = {}
+
+    for name, model in BASE_MODELS.items():
+        with mlflow.start_run(run_name=name):
             model.fit(X_train, y_train)
-            mse = mean_squared_error(y_test, model.predict(X_test))
-            MODEL_MSE.labels(model_name=name).set(float(mse)) 
+            preds = model.predict(X_test)
+
+            mse = mean_squared_error(y_test, preds)
+            rmse = np.sqrt(mse)
+
+            direction_acc = np.mean(
+                np.sign(y_test) == np.sign(preds)
+            )
+
+            rmse_scores[name] = rmse
+            MODEL_MSE.labels(model_name=name).set(mse)
+
             mlflow.log_metric("mse", mse)
-            mlflow.sklearn.log_model(model, f"model_{name}", registered_model_name=f"Stock_{name}")
+            mlflow.log_metric("rmse", rmse)
+            mlflow.log_metric("directional_accuracy", direction_acc)
 
-    return {"status": "Trained", "models": list(MODELS.keys())}
+            mlflow.sklearn.log_model(
+                model,
+                name="model",
+                registered_model_name=f"Stock_{name}"
+            )
 
-@app.post("/generate-reports")
-async def generate_reports():
-    df = pd.read_csv("data/latest_stock.csv").apply(pd.to_numeric, errors='coerce').dropna()
-    X = df[['Open', 'High', 'Low', 'Volume']].astype(float)
-    
-    report = Report(metrics=[DataDriftPreset()])
-    report.run(reference_data=X.head(50), current_data=X.tail(50))
-    report.save_html("reports/drift_report.html")
+    weights = {k: 1 / (v + 1e-8) for k, v in rmse_scores.items()}
+    total = sum(weights.values())
+    weights = {k: v / total for k, v in weights.items()}
 
-    for name, model in MODELS.items():
-        with mlflow.start_run(run_name=f"SHAP_{name}"):
-            def p_wrap(data):
-                return model.predict(pd.DataFrame(data, columns=X.columns))
-            mlflow.shap.log_explanation(p_wrap, X.tail(30))
+    with open("ensemble_weights.json", "w") as f:
+        json.dump(weights, f)
 
-    return {"status": "Reports Generated"}
+    with mlflow.start_run(run_name="Ensemble"):
+        mlflow.pyfunc.log_model(
+            name="ensemble_model",
+            python_model=EnsembleModel(),
+            artifacts={"weights": "ensemble_weights.json"},
+            registered_model_name="Stock_Ensemble"
+        )
 
-# --- 3. THE FIXED PREDICT ---
+    return {"status": "trained", "ensemble_weights": weights}
+
+# ================= PREDICT =================
 @app.post("/predict")
 async def predict(payload: dict):
-    start_time = time.time()
+    start = time.time()
     REQUEST_COUNT.labels(endpoint="/predict").inc()
+
     model_name = payload.get("model_name", "XGBoost")
-    feats = payload.get("features") # Expected keys: open, high, low, volume (case insensitive)
+    feats = payload["features"]
 
-    try:
-        model = mlflow.sklearn.load_model(f"models:/Stock_{model_name}/latest")
-        
-        # FIXED: Explicit dictionary re-mapping to ensure order and naming
-        clean_feats = {
-            'Open': float(feats.get('open') or feats.get('Open')),
-            'High': float(feats.get('high') or feats.get('High')),
-            'Low': float(feats.get('low') or feats.get('Low')),
-            'Volume': float(feats.get('volume') or feats.get('Volume'))
-        }
-        
-        input_df = pd.DataFrame([clean_feats])
-        prediction = model.predict(input_df)
+    df = pd.read_csv("data/latest_stock.csv")
+    df = add_features(df)
 
-        # LIME Explanation
-        df_train = pd.read_csv("data/latest_stock.csv").head(100)
-        explainer = lime.lime_tabular.LimeTabularExplainer(
-            df_train[['Open', 'High', 'Low', 'Volume']].values,
-            feature_names=['Open', 'High', 'Low', 'Volume'],
-            mode='regression'
+    row = df.iloc[-1:][FEATURES].copy()
+    row["Open"] = feats["open"]
+    row["High"] = feats["high"]
+    row["Low"] = feats["low"]
+    row["Volume"] = feats["volume"]
+
+    if model_name == "Ensemble":
+        model = mlflow.pyfunc.load_model(
+            "models:/Stock_Ensemble/latest"
         )
-        exp = explainer.explain_instance(input_df.values[0], model.predict)
+    else:
+        model = mlflow.sklearn.load_model(
+            f"models:/Stock_{model_name}/latest"
+        )
 
-        LATENCY.observe(time.time() - start_time)
-        return {
-            "model": model_name,
-            "prediction": float(prediction[0]),
-            "lime": exp.as_list()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Predict Failed: {str(e)}")
+    predicted_return = model.predict(row)[0]
 
+    with open("data/last_close.json") as f:
+        last_close = json.load(f)["last_close"]
+
+    final_price = last_close * np.exp(predicted_return)
+
+    LATENCY.observe(time.time() - start)
+
+    return {
+        "model": model_name,
+        "prediction": float(final_price),
+        "predicted_return": float(predicted_return)
+    }
+
+# ================= RUN =================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

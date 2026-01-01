@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ReliantML Production Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .card { margin-bottom: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .header-section { background: #212529; color: white; padding: 2rem 0; margin-bottom: 2rem; }
+        pre { background: #e9ecef; padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto; }
+        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="header-section text-center">
+    <h1>ReliantML: Stock Prediction MLOps</h1>
+    <p class="lead">Observability, Explainability & Multi-Model Serving</p>
+    <div class="container d-flex justify-content-center align-items-center gap-3">
+        <label for="baseUrl" class="form-label mb-0">API Base URL:</label>
+        <input type="text" id="baseUrl" class="form-control w-25" value="http://localhost:8000">
+        <button class="btn btn-outline-light btn-sm" onclick="checkHealth()">Check Health</button>
+    </div>
+</div>
+
+<div class="container">
+    <div class="row">
+        <div class="col-md-4">
+            <div class="card p-4">
+                <h3>Pipeline Control</h3>
+                <hr>
+                <button class="btn btn-primary w-100 mb-2" onclick="callApi('/train', 'POST')">Start Multi-Model Training</button>
+                <button class="btn btn-info w-100 mb-2" onclick="callApi('/generate-reports', 'POST')">Generate Drift & SHAP Reports</button>
+                <a id="metricsLink" href="http://localhost:8000/metrics" target="_blank" class="btn btn-outline-secondary w-100">View Prometheus Metrics</a>
+            </div>
+        </div>
+
+        <div class="col-md-8">
+            <div class="card p-4">
+                <h3>Real-Time Predict (XAI Enabled)</h3>
+                <hr>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Model Selection</label>
+                        <select id="model_name" class="form-select">
+                            <option value="XGBoost">XGBoost (Champion)</option>
+                            <option value="RandomForest">Random Forest</option>
+                            <option value="LinearReg">Linear Regression</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3"><label class="form-label">Open</label><input type="number" id="open" class="form-control" value="2500"></div>
+                    <div class="col-md-3"><label class="form-label">High</label><input type="number" id="high" class="form-control" value="2550"></div>
+                    <div class="col-md-3"><label class="form-label">Low</label><input type="number" id="low" class="form-control" value="2480"></div>
+                    <div class="col-md-3"><label class="form-label">Volume</label><input type="number" id="volume" class="form-control" value="5000000"></div>
+                </div>
+                <button class="btn btn-success mt-4 w-100" onclick="makePrediction()">Get Prediction + LIME Explanation</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-12">
+            <div class="card p-4">
+                <h3>System Logs & XAI Output</h3>
+                <hr>
+                <div id="loading" class="text-center d-none"><div class="spinner-border text-primary"></div></div>
+                <pre id="output">Output will appear here...</pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    async function checkHealth() {
+        const base = document.getElementById('baseUrl').value;
+        document.getElementById('metricsLink').href = `${base}/metrics`;
+        alert(`API URL updated to: ${base}. Testing connection...`);
+    }
+
+    async function callApi(endpoint, method) {
+        const base = document.getElementById('baseUrl').value;
+        const output = document.getElementById('output');
+        const loader = document.getElementById('loading');
+        
+        loader.classList.remove('d-none');
+        output.innerText = "Requesting...";
+
+        try {
+            const response = await fetch(`${base}${endpoint}`, { method: method });
+            const data = await response.json();
+            output.innerText = JSON.stringify(data, null, 2);
+        } catch (err) {
+            output.innerText = "Error: " + err.message;
+        } finally {
+            loader.classList.add('d-none');
+        }
+    }
+
+    async function makePrediction() {
+        const base = document.getElementById('baseUrl').value;
+        const output = document.getElementById('output');
+        const loader = document.getElementById('loading');
+
+        const payload = {
+            model_name: document.getElementById('model_name').value,
+            features: {
+                open: parseFloat(document.getElementById('open').value),
+                high: parseFloat(document.getElementById('high').value),
+                low: parseFloat(document.getElementById('low').value),
+                volume: parseFloat(document.getElementById('volume').value)
+            }
+        };
+
+        loader.classList.remove('d-none');
+        try {
+            const response = await fetch(`${base}/predict`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            output.innerText = "Prediction: " + data.prediction + "\n\nLIME Local Explanation:\n" + JSON.stringify(data.lime, null, 2);
+        } catch (err) {
+            output.innerText = "Error: " + err.message;
+        } finally {
+            loader.classList.add('d-none');
+        }
+    }
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+artifact_path: /app/mlruns/9/models/m-ae6c8d8dec074cc099b75a63d6ac0c29/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.12.12
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.8.0
+mlflow_version: 3.8.1
+model_id: m-ae6c8d8dec074cc099b75a63d6ac0c29
+model_size_bytes: 3354195
+model_uuid: m-ae6c8d8dec074cc099b75a63d6ac0c29
+prompts: null
+run_id: 4d92642635c94a70a556f06b66e00244
+utc_time_created: '2026-01-01 16:56:56.373126'
