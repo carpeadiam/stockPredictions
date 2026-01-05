@@ -15,6 +15,9 @@ from prometheus_client import (
     Counter, Gauge, Histogram,
     generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
 )
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import Request
 
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -44,6 +47,13 @@ MODEL_MSE = Gauge(
 
 # ================= App =================
 app = FastAPI(title="Production ML Pipeline")
+app.mount("/static", StaticFiles(directory="."), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_dashboard():
+    with open("index1.html", "r", encoding="utf-8") as f:
+        return f.read()
+
 
 @app.get("/metrics")
 def metrics():

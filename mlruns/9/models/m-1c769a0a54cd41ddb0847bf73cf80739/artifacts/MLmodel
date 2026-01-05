@@ -1,0 +1,23 @@
+artifact_path: /app/mlruns/9/models/m-1c769a0a54cd41ddb0847bf73cf80739/artifacts
+flavors:
+  python_function:
+    artifacts:
+      weights:
+        path: artifacts/ensemble_weights.json
+        uri: ensemble_weights.json
+    cloudpickle_version: 3.1.2
+    code: null
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.12.12
+    streamable: false
+mlflow_version: 3.8.1
+model_id: m-1c769a0a54cd41ddb0847bf73cf80739
+model_size_bytes: 2756
+model_uuid: m-1c769a0a54cd41ddb0847bf73cf80739
+prompts: null
+run_id: 70e1a5043be044d4a9bc22f387586ae3
+utc_time_created: '2026-01-05 16:23:03.934753'
