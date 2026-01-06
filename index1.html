@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ReliantML – Production MLOps Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <style>
+        body {
+            background-color: #f4f6f9;
+        }
+        .header {
+            background: linear-gradient(135deg, #1f2933, #111827);
+            color: white;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .card {
+            border-radius: 12px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+            margin-bottom: 1.5rem;
+        }
+        .metric-box {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+        .label {
+            font-size: 0.85rem;
+            color: #6b7280;
+        }
+        .value {
+            font-size: 1.3rem;
+            font-weight: bold;
+        }
+        footer {
+            text-align: center;
+            color: #6b7280;
+            margin: 2rem 0;
+        }
+    </style>
+</head>
+<body>
+
+<div class="header text-center">
+    <h1>ReliantML</h1>
+    <p class="lead mb-1">End-to-End Stock Price Prediction with MLOps</p>
+    <p class="small">MLflow · Prometheus · FastAPI · DVC · Docker</p>
+</div>
+
+<div class="container">
+
+    <div class="row">
+        <div class="col-lg-5">
+
+            <div class="card p-4">
+                <h4>Model Inference</h4>
+                <hr>
+
+                <div class="mb-3">
+                    <label class="label">Model</label>
+                    <select id="model" class="form-select">
+                        <option value="XGBoost">XGBoost</option>
+                        <option value="RandomForest">Random Forest</option>
+                        <option value="LinearReg">Linear Regression</option>
+                        <option value="Ensemble">Ensemble</option>
+                    </select>
+                </div>
+
+                <div class="row g-3">
+                    <div class="col-6">
+                        <label class="label">Open</label>
+                        <input id="open1" class="form-control" type="number" value="2500">
+                    </div>
+                    <div class="col-6">
+                        <label class="label">High</label>
+                        <input id="high" class="form-control" type="number" value="2550">
+                    </div>
+                    <div class="col-6">
+                        <label class="label">Low</label>
+                        <input id="low" class="form-control" type="number" value="2480">
+                    </div>
+                    <div class="col-6">
+                        <label class="label">Volume</label>
+                        <input id="volume" class="form-control" type="number" value="5000000">
+                    </div>
+                </div>
+
+                <button class="btn btn-success w-100 mt-4" onclick="predict()">Predict Price</button>
+            </div>
+
+            <div class="card p-4">
+                <h4>Pipeline Control</h4>
+                <hr>
+
+                <button id="trainBtn" class="btn btn-primary w-100 mb-2" onclick="train()">
+                    Retrain All Models
+                </button>
+
+                <div id="trainStatus" class="text-center mt-2 d-none">
+                    <div class="spinner-border text-primary spinner-border-sm"></div>
+                    <span class="ms-2">Training in progress…</span>
+                </div>
+
+                <a href="https://glorious-doodle-x5qw54w7xpqrc5x6-9090.app.github.dev/query"
+                   target="_blank"
+                   class="btn btn-outline-secondary w-100 mt-3">
+                    Open Raw Prometheus Metrics
+                </a>
+            </div>
+        </div>
+
+        <div class="col-lg-7">
+            <div class="card p-4">
+                <h4>Prediction Output</h4>
+                <hr>
+                <div class="row text-center">
+                    <div class="col-4">
+                        <div class="label">Model</div>
+                        <div id="out-model" class="value">—</div>
+                    </div>
+                    <div class="col-4">
+                        <div class="label">Predicted Return</div>
+                        <div id="out-return" class="value">—</div>
+                    </div>
+                    <div class="col-4">
+                        <div class="label">Predicted Price</div>
+                        <div id="out-price" class="value">—</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card p-4">
+                <h4>Live MLOps Metrics</h4>
+                <hr>
+                <div id="metrics" class="metric-box">Loading metrics…</div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<footer>
+    Production ML Monitoring & Serving Demo
+</footer>
+
+<script>
+/* ✅ ONLY FIX: same-origin requests */
+const BASE = "";
+
+async function train() {
+    const btn = document.getElementById("trainBtn");
+    const status = document.getElementById("trainStatus");
+
+    btn.disabled = true;
+    status.classList.remove("d-none");
+
+    try {
+        await fetch(`${BASE}/train`, { method: "POST" });
+        status.innerHTML = "✅ Training completed";
+    } catch (e) {
+        status.innerHTML = "❌ Training failed";
+    } finally {
+        btn.disabled = false;
+        setTimeout(() => status.classList.add("d-none"), 3000);
+    }
+}
+
+async function predict() {
+    const payload = {
+        model_name: document.getElementById("model").value,
+        features: {
+            open: Number(open1.value),
+            high: Number(high.value),
+            low: Number(low.value),
+            volume: Number(volume.value)
+        }
+    };
+    console.log(JSON.stringify(payload));
+    const res = await fetch(`${BASE}/predict`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+
+    document.getElementById("out-model").innerText = data.model;
+    document.getElementById("out-return").innerText = data.predicted_return.toFixed(5);
+    document.getElementById("out-price").innerText = data.prediction.toFixed(2);
+
+    loadMetrics();
+}
+
+async function loadMetrics() {
+    const res = await fetch(`${BASE}/metrics`);
+    const text = await res.text();
+    document.getElementById("metrics").innerText = text;
+}
+
+setInterval(loadMetrics, 10000);
+loadMetrics();
+</script>
+
+</body>
+</html>
